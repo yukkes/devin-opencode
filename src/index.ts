@@ -1,12 +1,18 @@
 import { Plugin, Model, Provider } from "@opencode/plugin"
 import { createDevin, getCachedCatalog, type ModelCatalogEntry } from "ai-sdk-devin"
+import * as crypto from "node:crypto"
 import * as fs from "node:fs"
+import * as http from "node:http"
 import * as os from "node:os"
 import * as path from "node:path"
 import { Devin, DevinApiError, resolveOrgId } from "./devin.js"
 
 const INTEGRATION_ID = "devin"
 const ENV_VAR = "DEVIN_API_KEY"
+const WINDSURF_INTEGRATION_ID = "windsurf"
+const WINDSURF_OAUTH_CLIENT_ID = "3GUryQ7ldAeKEuD2obYnppsnmj58eP5u"
+const WINDSURF_SIGNIN_URL = "https://windsurf.com/windsurf/signin"
+const WINDSURF_REGISTER_URL = "https://register.windsurf.com"
 const LLM_ENV_VAR = "DEVIN_LLM_API_KEY"
 const LLM_BASE_URL_ENV_VAR = "DEVIN_LLM_BASE_URL"
 /** Runtime package that streams Cognition/Windsurf LLM models. The `aisdk:`
@@ -26,9 +32,23 @@ interface LlmAuth {
  * account (e.g. `server.self-serve.windsurf.com`), so it is read alongside the
  * token.
  */
-function resolveLlm(): LlmAuth | undefined {
+async function resolveLlm(ctx: any): Promise<LlmAuth | undefined> {
   const env = process.env[LLM_ENV_VAR]
   if (env) return { token: env, host: process.env[LLM_BASE_URL_ENV_VAR] ?? DEFAULT_LLM_HOST }
+
+  // Windsurf sign-in via /connect (OpenCode integration).
+  try {
+    const connection = await ctx.integration.connection.active(WINDSURF_INTEGRATION_ID)
+    if (connection) {
+      const value = await ctx.integration.connection.resolve(connection)
+      if (value?.type === "oauth" && value.access?.startsWith("devin-session-token$")) {
+        const host = (value.metadata?.apiServerUrl as string | undefined) ?? DEFAULT_LLM_HOST
+        return { token: value.access, host }
+      }
+    }
+  } catch {
+    // fall through
+  }
 
   // OpenCode-native Windsurf auth (~/.config/opencode-windsurf-auth), set up
   // with `npx opencode-windsurf-auth login`. Preferred so the Devin CLI is not
@@ -170,6 +190,90 @@ function renderSession(s: {
   return `- ${s.session_id} | ${title} | ${status}`
 }
 
+/** Exchange the browser token for a long-lived Windsurf API key. */
+async function registerWindsurfUser(
+  firebaseIdToken: string,
+): Promise<{ apiKey: string; name: string; apiServerUrl: string }> {
+  const response = await fetch(
+    `${WINDSURF_REGISTER_URL}/exa.seat_management_pb.SeatManagementService/RegisterUser`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+      body: JSON.stringify({ firebase_id_token: firebaseIdToken }),
+    },
+  )
+  const text = await response.text()
+  if (!response.ok) throw new Error(`RegisterUser failed (${response.status}): ${text.slice(0, 200)}`)
+  const parsed = JSON.parse(text) as { api_key?: string; name?: string; api_server_url?: string }
+  if (!parsed.api_key) throw new Error("RegisterUser returned no api_key")
+  return {
+    apiKey: parsed.api_key,
+    name: parsed.name ?? "",
+    apiServerUrl: parsed.api_server_url || DEFAULT_LLM_HOST,
+  }
+}
+
+/** Start a loopback listener and build the Windsurf sign-in URL. */
+async function prepareWindsurfLogin(): Promise<{ url: string; waitForToken: () => Promise<string> }> {
+  let resolveToken: (token: string) => void = () => {}
+  let rejectToken: (error: Error) => void = () => {}
+  const token = new Promise<string>((resolve, reject) => {
+    resolveToken = resolve
+    rejectToken = reject
+  })
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1")
+    if (url.pathname !== "/auth") {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    const value = url.searchParams.get("firebase_id_token") ?? url.searchParams.get("access_token")
+    res.writeHead(200, { "Content-Type": "text/html" })
+    if (value) {
+      res.end("<html><body>Signed in. You can close this tab and return to OpenCode.</body></html>")
+      resolveToken(value)
+    } else {
+      // The token arrives in the URL fragment; bounce it to the query string.
+      res.end(
+        "<html><body><script>var h=location.hash.replace(/^#/,'');if(h)location.replace('/auth?'+h);</script>Signing in…</body></html>",
+      )
+    }
+  })
+  server.on("error", rejectToken)
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const port = (server.address() as { port: number }).port
+  const params = new URLSearchParams({
+    response_type: "token",
+    client_id: WINDSURF_OAUTH_CLIENT_ID,
+    redirect_uri: `http://127.0.0.1:${port}/auth`,
+    state: crypto.randomUUID(),
+    prompt: "login",
+    redirect_parameters_type: "query",
+  })
+  const waitForToken = () => token.finally(() => server.close())
+  return { url: `${WINDSURF_SIGNIN_URL}?${params}`, waitForToken }
+}
+
+/** Mirror the token to the shared windsurf-auth credentials file. */
+function saveWindsurfCredentials(creds: { apiKey: string; name: string; apiServerUrl: string }): void {
+  try {
+    const dir = path.join(os.homedir(), ".config", "opencode-windsurf-auth")
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(
+      path.join(dir, "credentials.json"),
+      JSON.stringify(
+        { ...creds, issuedAt: new Date().toISOString(), oauthClientId: WINDSURF_OAUTH_CLIENT_ID },
+        null,
+        2,
+      ),
+      { mode: 0o600 },
+    )
+  } catch {
+    // the integration credential is still stored by OpenCode
+  }
+}
+
 export default Plugin.define({
   id: "devin.opencode",
   setup: async (ctx) => {
@@ -191,6 +295,38 @@ export default Plugin.define({
         integrationID: integrationId,
         method: { type: "env", names: [ENV_VAR] },
       })
+
+      // Windsurf/Cognition sign-in for the `devin/...` models. Opens the browser
+      // and exchanges the captured token for a long-lived Windsurf API key.
+      draft.update(WINDSURF_INTEGRATION_ID, (integration) => {
+        integration.name = "Windsurf (Cognition)"
+      })
+      draft.method.update({
+        integrationID: WINDSURF_INTEGRATION_ID,
+        method: { id: "oauth", type: "oauth", label: "Sign in with Windsurf" },
+        authorize: async () => {
+          const login = await prepareWindsurfLogin()
+          return {
+            mode: "auto",
+            url: login.url,
+            instructions:
+              "Sign in with your Windsurf/Cognition account in the browser. The token is captured automatically.",
+            callback: (async () => {
+              const token = await login.waitForToken()
+              const creds = await registerWindsurfUser(token)
+              saveWindsurfCredentials(creds)
+              return {
+                type: "oauth",
+                methodID: "oauth",
+                refresh: "",
+                access: creds.apiKey,
+                expires: Math.floor(Date.now() / 1000) + 10 * 365 * 24 * 60 * 60,
+                metadata: { apiServerUrl: creds.apiServerUrl, name: creds.name },
+              }
+            })(),
+          } as any
+        },
+      })
     })
 
     const getApiKey = () => resolveApiKey(ctx, integrationId)
@@ -198,7 +334,7 @@ export default Plugin.define({
     // Register the Cognition/Windsurf LLM provider (the `devin/...` models in
     // /models) when a `devin-session-token$...` token is available. The session
     // tools work with just DEVIN_API_KEY; the models additionally need this.
-    const llm = resolveLlm()
+    const llm = await resolveLlm(ctx)
     if (llm) {
       const catalog = await getCachedCatalog(llm.token, llm.host)
       const models = catalog

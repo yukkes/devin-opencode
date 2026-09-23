@@ -6,7 +6,8 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 
 - Adds 6 tools the OpenCode agent can call to manage cloud Devin sessions
 - Registers the Cognition/Windsurf models as `devin/...` entries in `/models` when a token is available
-- Configures auth from the TUI (`/connect`) or the `DEVIN_API_KEY` environment variable
+- Signs in to Windsurf/Cognition from the TUI (`/connect` → **Windsurf (Cognition)**) for the models
+- Uses a Devin API key (TUI or `DEVIN_API_KEY`) for the session tools
 - Uses the Devin v3 API with `cog_` service user keys (also supports legacy `apk_`/`apk_user_` keys via v1 fallback)
 
 | Tool | Purpose |
@@ -59,30 +60,36 @@ OpenCode v1 uses the singular `plugin` field and the legacy entrypoint. Clone th
 
 </details>
 
-### 3. Set your credentials
+### 3. Sign in
 
-The easiest way is from the TUI:
+**For the `devin/...` models (recommended):** sign in to Windsurf/Cognition from the TUI:
 
 ```text
 /connect
 ```
 
-Select **Devin**, choose **Devin API key**, and paste your `cog_...` key. From the CLI the same flow is:
+Select **Windsurf (Cognition)** and choose **Sign in with Windsurf**. A browser opens, you sign in, and the token is captured automatically. The equivalent CLI command is:
 
 ```sh
-opencode auth login devin --method key
+npx opencode-windsurf-auth login
 ```
 
-A saved account takes precedence over the environment variable, so the environment variable is optional.
+**For the cloud session tools (`devin_*`) only:** those tools use a separate Devin API key. From the TUI:
 
-If you prefer environment variables, set them in your shell profile (`~/.zshrc` or `~/.bashrc`):
+```text
+/connect
+```
+
+Select **Devin**, choose **Devin API key**, and paste your `cog_...` key (create one under **Settings > Service users** in the Devin app). The CLI equivalent is `opencode auth login devin --method key`. Skip this if you only want the models.
+
+A saved account takes precedence over the environment variable, so environment variables are optional:
 
 ```sh
 export DEVIN_API_KEY=cog_your_key_here
 export DEVIN_ORG_ID=org-your_org_id_here
 ```
 
-`DEVIN_ORG_ID` is optional — if not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API.
+`DEVIN_ORG_ID` is optional — if not set, the plugin auto-discovers it from `~/.config/devin/config.json` or the `/v3/organizations` API.
 
 ### 4. Use it
 
@@ -92,12 +99,20 @@ Ask the OpenCode agent:
 
 ## Models
 
-When a Windsurf/Cognition token is available, the plugin also registers the Cognition models as `devin/...` entries in `/models` (SWE-2, Claude, GPT-6, Gemini, GLM, Kimi, and more). The token is read from the Devin CLI credentials (`~/.local/share/devin/credentials.toml`), from `DEVIN_LLM_API_KEY`, or from a Windsurf auth file.
+`devin/...` entries in `/models` (SWE-2, Claude, GPT-6, Gemini, GLM, Kimi, and more) stream from Cognition's Windsurf server. They need a Windsurf/Cognition token, resolved in this order:
+
+1. `DEVIN_LLM_API_KEY`
+2. `/connect` → **Windsurf (Cognition)** (browser sign-in)
+3. `~/.config/opencode-windsurf-auth/credentials.json` (from `npx opencode-windsurf-auth login`)
+4. `~/.pi/agent/auth.json`
+5. `~/.local/share/devin/credentials.toml` (Devin CLI, fallback)
+
+The Devin CLI is not required.
 
 | Variable | Required | Description |
 | --- | --- | --- |
 | `DEVIN_LLM_API_KEY` | No | Windsurf/Cognition `devin-session-token$...` token for the `devin/...` models. |
-| `DEVIN_LLM_BASE_URL` | No | API host for the models. Defaults to the host in the Devin CLI credentials, then `https://server.codeium.com`. |
+| `DEVIN_LLM_BASE_URL` | No | API host for the models. Defaults to the host stored with the token, then `https://server.codeium.com`. |
 
 ## Environment variables
 
