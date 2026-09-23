@@ -30,12 +30,16 @@ function resolveLlm(): LlmAuth | undefined {
   const env = process.env[LLM_ENV_VAR]
   if (env) return { token: env, host: process.env[LLM_BASE_URL_ENV_VAR] ?? DEFAULT_LLM_HOST }
 
-  // Devin CLI credentials (~/.local/share/devin/credentials.toml).
+  // OpenCode-native Windsurf auth (~/.config/opencode-windsurf-auth), set up
+  // with `npx opencode-windsurf-auth login`. Preferred so the Devin CLI is not
+  // required.
   try {
-    const toml = fs.readFileSync(path.join(os.homedir(), ".local", "share", "devin", "credentials.toml"), "utf8")
-    const token = /windsurf_api_key\s*=\s*"([^"]+)"/.exec(toml)?.[1]
-    const host = /api_server_url\s*=\s*"([^"]+)"/.exec(toml)?.[1]
-    if (token?.startsWith("devin-session-token$")) return { token, host: host ?? DEFAULT_LLM_HOST }
+    const creds = JSON.parse(
+      fs.readFileSync(path.join(os.homedir(), ".config", "opencode-windsurf-auth", "credentials.json"), "utf8"),
+    )
+    if (typeof creds?.apiKey === "string" && creds.apiKey.startsWith("devin-session-token$")) {
+      return { token: creds.apiKey, host: creds.apiServerUrl ?? DEFAULT_LLM_HOST }
+    }
   } catch {
     // fall through
   }
@@ -50,13 +54,12 @@ function resolveLlm(): LlmAuth | undefined {
     // fall through
   }
 
+  // Devin CLI credentials (~/.local/share/devin/credentials.toml) as a fallback.
   try {
-    const creds = JSON.parse(
-      fs.readFileSync(path.join(os.homedir(), ".config", "opencode-windsurf-auth", "credentials.json"), "utf8"),
-    )
-    if (typeof creds?.apiKey === "string" && creds.apiKey.startsWith("devin-session-token$")) {
-      return { token: creds.apiKey, host: creds.apiServerUrl ?? DEFAULT_LLM_HOST }
-    }
+    const toml = fs.readFileSync(path.join(os.homedir(), ".local", "share", "devin", "credentials.toml"), "utf8")
+    const token = /windsurf_api_key\s*=\s*"([^"]+)"/.exec(toml)?.[1]
+    const host = /api_server_url\s*=\s*"([^"]+)"/.exec(toml)?.[1]
+    if (token?.startsWith("devin-session-token$")) return { token, host: host ?? DEFAULT_LLM_HOST }
   } catch {
     // fall through
   }
