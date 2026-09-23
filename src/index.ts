@@ -1,8 +1,88 @@
-import { Plugin } from "@opencode-ai/plugin/v2"
+import { Plugin, Model, Provider } from "@opencode-ai/plugin/v2"
+import { createDevin, getCachedCatalog, type ModelCatalogEntry } from "ai-sdk-devin"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { Devin, DevinApiError, resolveOrgId } from "./devin.js"
 
 const INTEGRATION_ID = "devin"
 const ENV_VAR = "DEVIN_API_KEY"
+const LLM_ENV_VAR = "DEVIN_LLM_API_KEY"
+const LLM_BASE_URL_ENV_VAR = "DEVIN_LLM_BASE_URL"
+/** Runtime package that streams Cognition/Windsurf LLM models. */
+const LLM_PACKAGE = "ai-sdk-devin"
+const DEFAULT_LLM_HOST = "https://server.codeium.com"
+
+interface LlmAuth {
+  token: string
+  host: string
+}
+
+/**
+ * Resolve the Windsurf/Cognition OAuth token and host used for LLM streaming.
+ * Unlike the session tools, this is not a Devin API key (`cog_...`): it is a
+ * `devin-session-token$...` token minted by Windsurf login. The host differs per
+ * account (e.g. `server.self-serve.windsurf.com`), so it is read alongside the
+ * token.
+ */
+function resolveLlm(): LlmAuth | undefined {
+  const env = process.env[LLM_ENV_VAR]
+  if (env) return { token: env, host: process.env[LLM_BASE_URL_ENV_VAR] ?? DEFAULT_LLM_HOST }
+
+  // Devin CLI credentials (~/.local/share/devin/credentials.toml).
+  try {
+    const toml = fs.readFileSync(path.join(os.homedir(), ".local", "share", "devin", "credentials.toml"), "utf8")
+    const token = /windsurf_api_key\s*=\s*"([^"]+)"/.exec(toml)?.[1]
+    const host = /api_server_url\s*=\s*"([^"]+)"/.exec(toml)?.[1]
+    if (token?.startsWith("devin-session-token$")) return { token, host: host ?? DEFAULT_LLM_HOST }
+  } catch {
+    // fall through
+  }
+
+  try {
+    const auth = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".pi", "agent", "auth.json"), "utf8"))
+    const token = auth?.devin?.access
+    if (typeof token === "string" && token.startsWith("devin-session-token$")) {
+      return { token, host: DEFAULT_LLM_HOST }
+    }
+  } catch {
+    // fall through
+  }
+
+  try {
+    const creds = JSON.parse(
+      fs.readFileSync(path.join(os.homedir(), ".config", "opencode-windsurf-auth", "credentials.json"), "utf8"),
+    )
+    if (typeof creds?.apiKey === "string" && creds.apiKey.startsWith("devin-session-token$")) {
+      return { token: creds.apiKey, host: creds.apiServerUrl ?? DEFAULT_LLM_HOST }
+    }
+  } catch {
+    // fall through
+  }
+
+  return undefined
+}
+
+/** Build an OpenCode model entry from a Cognition catalog entry. */
+function buildLlmModel(entry: ModelCatalogEntry): Model.Info {
+  const base = Model.Info.empty(Provider.ID.make(INTEGRATION_ID), Model.ID.make(entry.modelUid))
+  return {
+    ...base,
+    name: entry.label,
+    capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+    time: { released: Date.now() },
+    cost: [
+      {
+        input: (entry.pricing?.input ?? 0) as never,
+        output: (entry.pricing?.output ?? 0) as never,
+        cache: { read: (entry.pricing?.cachedInput ?? 0) as never, write: 0 as never },
+      },
+    ],
+    status: "active",
+    enabled: true,
+    limit: { context: entry.contextWindow || 256_000, output: 128_000 },
+  }
+}
 
 /** Cached org_id for v3 API calls. */
 let cachedOrgId: string | undefined
@@ -113,6 +193,72 @@ export default Plugin.define({
     })
 
     const getApiKey = () => resolveApiKey(ctx, integrationId)
+
+    // Register the Cognition/Windsurf LLM provider (the `devin/...` models in
+    // /models) when a `devin-session-token$...` token is available. The session
+    // tools work with just DEVIN_API_KEY; the models additionally need this.
+    const llm = resolveLlm()
+    if (llm) {
+      const catalog = await getCachedCatalog(llm.token, llm.host)
+      const models = catalog
+        ? Array.from(catalog.byUid.values())
+            .filter((entry) => !entry.disabled)
+            .map(buildLlmModel)
+        : []
+      if (models.length > 0) {
+        await (ctx as any).provider.transform((editor: any) => {
+          editor.add({
+            info: {
+              ...Provider.Info.empty(Provider.ID.make(INTEGRATION_ID)),
+              name: "Devin (Cognition)",
+              activation: "enabled",
+              package: LLM_PACKAGE,
+              settings: { apiKey: llm.token, baseURL: llm.host },
+            },
+            models,
+          })
+        })
+        // ai-sdk-devin is not an OpenCode runtime package, so hand OpenCode an
+        // SDK instance for it; OpenCode then calls sdk.languageModel(modelID).
+        //
+        // ai-sdk-devin implements AI SDK v3 but emits `finishReason` as a bare
+        // string; v3 requires `{ unified, raw }`. Normalize it in flight so
+        // OpenCode's finish-reason schema validates.
+        await ctx.aisdk.hook("sdk", (event: any) => {
+          if (event.package !== LLM_PACKAGE) return
+          const apiKey = (event.options?.apiKey as string | undefined) ?? llm.token
+          if (!apiKey) return
+          const provider = createDevin({ apiKey, baseURL: llm.host })
+          const normalizeFinish = (stream: ReadableStream<any>) =>
+            stream.pipeThrough(
+              new TransformStream({
+                transform(part: any, controller) {
+                  if (part?.type === "finish" && typeof part.finishReason === "string") {
+                    controller.enqueue({
+                      ...part,
+                      finishReason: { unified: part.finishReason, raw: part.finishReason },
+                    })
+                  } else {
+                    controller.enqueue(part)
+                  }
+                },
+              }),
+            )
+          event.sdk = {
+            languageModel(modelId: string) {
+              const model = provider.languageModel(modelId)
+              return {
+                ...model,
+                doStream: async (opts: any) => {
+                  const result = await model.doStream(opts)
+                  return { ...result, stream: normalizeFinish(result.stream) }
+                },
+              }
+            },
+          }
+        })
+      }
+    }
 
     await ctx.tool.transform((tools) => {
       // --- devin_status -----------------------------------------------------

@@ -12,8 +12,10 @@ jobs:
   publish:
     name: Bump version and publish to npm
     runs-on: ubuntu-latest
-    # Skip version-bump commits pushed by this workflow
-    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    # Only publish from the upstream repository, and skip version-bump commits
+    # pushed by this workflow. Forks install from GitHub instead:
+    #   opencode plugin add github:yukkes/devin-opencode
+    if: github.repository == 'karthiknish/devin-opencode' && !startsWith(github.event.head_commit.message, 'chore: bump version')
     steps:
       - uses: actions/checkout@v5
         with:

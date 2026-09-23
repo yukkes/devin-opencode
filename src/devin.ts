@@ -167,16 +167,14 @@ export async function resolveOrgId(apiKey: string): Promise<string | undefined> 
     // ignore
   }
 
-  // 3. Query the API — list sessions with any org and extract org_id from response
+  // 3. Query the API — GET /v3/self reports the service user's org_id
   try {
-    // The /v3/organizations endpoint lists orgs the service user belongs to
-    const res = await fetch("https://api.devin.ai/v3/organizations", {
+    const res = await fetch("https://api.devin.ai/v3/self", {
       headers: { Authorization: `Bearer ${apiKey}` },
     })
     if (res.ok) {
-      const data = (await res.json()) as { items?: Array<{ id: string }> } | Array<{ id: string }>
-      const orgs = Array.isArray(data) ? data : data.items
-      if (orgs && orgs.length > 0) return orgs[0].id
+      const data = (await res.json()) as { org_id?: string }
+      if (data.org_id) return data.org_id
     }
   } catch {
     // ignore

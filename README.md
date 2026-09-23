@@ -1,11 +1,12 @@
 # devin-opencode
 
-An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://devin.ai) account and lets the OpenCode agent drive cloud Devin sessions. Works with both **OpenCode v1** (stable) and **OpenCode v2** (beta).
+An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://devin.ai) account and lets the OpenCode agent drive cloud Devin sessions. Works with both **OpenCode v1** (stable) and **OpenCode v2** (current).
 
 ## What it does
 
 - Adds 6 tools the OpenCode agent can call to manage cloud Devin sessions
-- Configure via environment variables (`DEVIN_API_KEY` + `DEVIN_ORG_ID`)
+- Registers the Cognition/Windsurf models as `devin/...` entries in `/models` when a token is available
+- Configures auth from the TUI (`/connect`) or the `DEVIN_API_KEY` environment variable
 - Uses the Devin v3 API with `cog_` service user keys (also supports legacy `apk_`/`apk_user_` keys via v1 fallback)
 
 | Tool | Purpose |
@@ -29,28 +30,52 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 
 ### 2. Install the plugin
 
-**OpenCode v1 (stable):**
+Install straight from GitHub (OpenCode v2):
+
+```sh
+opencode plugin add github:yukkes/devin-opencode
+```
+
+Or add it to `opencode.jsonc` yourself:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["github:yukkes/devin-opencode"]
+}
+```
+
+<details>
+<summary>OpenCode v1 (stable)</summary>
+
+OpenCode v1 uses the singular `plugin` field and the legacy entrypoint. Clone the repository and reference the file directly:
 
 ```json
 // opencode.json
 {
-  "plugin": ["opencode-devin-plugin"]
+  "plugin": ["./devin-opencode/src/legacy.ts"]
 }
 ```
 
-**OpenCode v2 (beta):**
-
-```jsonc
-// opencode.jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-devin-plugin/v2"]
-}
-```
+</details>
 
 ### 3. Set your credentials
 
-Set environment variables in your shell profile (`~/.zshrc` or `~/.bashrc`):
+The easiest way is from the TUI:
+
+```text
+/connect
+```
+
+Select **Devin**, choose **Devin API key**, and paste your `cog_...` key. From the CLI the same flow is:
+
+```sh
+opencode auth login devin --method key
+```
+
+A saved account takes precedence over the environment variable, so the environment variable is optional.
+
+If you prefer environment variables, set them in your shell profile (`~/.zshrc` or `~/.bashrc`):
 
 ```sh
 export DEVIN_API_KEY=cog_your_key_here
@@ -59,49 +84,56 @@ export DEVIN_ORG_ID=org-your_org_id_here
 
 `DEVIN_ORG_ID` is optional — if not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API.
 
-> **Note:** Devin is a tool service, not an LLM provider, so it won't appear in the `/connect` command. Use environment variables instead.
-
 ### 4. Use it
 
 Ask the OpenCode agent:
 
 > Use devin_create_session to create a Devin session that refactors my auth module
 
+## Models
+
+When a Windsurf/Cognition token is available, the plugin also registers the Cognition models as `devin/...` entries in `/models` (SWE-2, Claude, GPT-6, Gemini, GLM, Kimi, and more). The token is read from the Devin CLI credentials (`~/.local/share/devin/credentials.toml`), from `DEVIN_LLM_API_KEY`, or from a Windsurf auth file.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DEVIN_LLM_API_KEY` | No | Windsurf/Cognition `devin-session-token$...` token for the `devin/...` models. |
+| `DEVIN_LLM_BASE_URL` | No | API host for the models. Defaults to the host in the Devin CLI credentials, then `https://server.codeium.com`. |
+
 ## Environment variables
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `DEVIN_API_KEY` | Yes (if not using `/connect`) | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`) |
+| `DEVIN_API_KEY` | No | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`). Optional if you connect Devin from the TUI (`/connect`); a saved account takes precedence over the environment variable. |
 | `DEVIN_ORG_ID` | No | Your Devin organization ID (`org-...`). If not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API. |
 
 ## Install methods
 
-### From npm
-
-**v1:** `"plugin": ["opencode-devin-plugin"]`
-**v2:** `"plugins": ["opencode-devin-plugin/v2"]`
-
-### From source
+### From GitHub (recommended)
 
 ```sh
-git clone https://github.com/karthiknish/devin-opencode.git
+opencode plugin add github:yukkes/devin-opencode
+```
+
+### From a local checkout
+
+```sh
+git clone https://github.com/yukkes/devin-opencode.git
 cd devin-opencode
 npm install
 ```
 
-Then reference it:
+Then reference the entrypoint directly:
 
+**v2:** `"plugins": ["./devin-opencode/src/index.ts"]`
 **v1:** `"plugin": ["./devin-opencode/src/legacy.ts"]`
-**v2:** `"plugins": [{ "package": "./devin-opencode/src/index.ts" }]`
 
 ## Differences between v1 and v2
 
-| Feature | OpenCode v1 (stable) | OpenCode v2 (beta) |
+| Feature | OpenCode v1 (stable) | OpenCode v2 (current) |
 | --- | --- | --- |
-| Package path | `opencode-devin-plugin` | `opencode-devin-plugin/v2` |
+| Entrypoint | `src/legacy.ts` | `src/index.ts` |
 | Config field | `"plugin"` (singular) | `"plugins"` (plural) |
-| Auth | `DEVIN_API_KEY` env var | `DEVIN_API_KEY` env var |
-| Binary | `opencode` | `opencode2` |
+| Auth | `/connect` or `DEVIN_API_KEY` | `/connect` or `DEVIN_API_KEY` |
 
 ## Configuration options (v2 only)
 
@@ -109,7 +141,7 @@ Then reference it:
 {
   "plugins": [
     {
-      "package": "opencode-devin-plugin/v2",
+      "package": "github:yukkes/devin-opencode",
       "options": { "integrationId": "devin" }
     }
   ]
@@ -141,18 +173,6 @@ examples/
   opencode.v2.jsonc  # example config for OpenCode v2
   opencode.v1.json   # example config for OpenCode v1
 ```
-
-## Releasing
-
-Every push to `main` automatically bumps the patch version and publishes to npm via OIDC trusted publishing. No tokens, no manual steps.
-
-```sh
-git push
-```
-
-The workflow typechecks, bumps the version, commits it back, and publishes with `--provenance`.
-
-Watch runs at https://github.com/karthiknish/devin-opencode/actions.
 
 ## License
 
