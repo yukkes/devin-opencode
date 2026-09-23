@@ -1,4 +1,4 @@
-import { Plugin, Model, Provider } from "@opencode-ai/plugin/v2"
+import { Plugin, Model, Provider } from "@opencode/plugin"
 import { createDevin, getCachedCatalog, type ModelCatalogEntry } from "ai-sdk-devin"
 import * as fs from "node:fs"
 import * as os from "node:os"
@@ -65,7 +65,7 @@ function resolveLlm(): LlmAuth | undefined {
 
 /** Build an OpenCode model entry from a Cognition catalog entry. */
 function buildLlmModel(entry: ModelCatalogEntry): Model.Info {
-  const base = Model.Info.empty(Provider.ID.make(INTEGRATION_ID), Model.ID.make(entry.modelUid))
+  const base = Model.Info.default(Provider.ID.make(INTEGRATION_ID), Model.ID.make(entry.modelUid))
   return {
     ...base,
     name: entry.label,
@@ -100,10 +100,7 @@ export interface DevinPluginOptions {
  * falling back to the DEVIN_API_KEY environment variable when no credential has
  * been stored via /connect.
  */
-async function resolveApiKey(
-  ctx: Parameters<NonNullable<Parameters<typeof Plugin.define>[0]["setup"]>>[0],
-  integrationId: string,
-): Promise<string | undefined> {
+async function resolveApiKey(ctx: any, integrationId: string): Promise<string | undefined> {
   try {
     const connection = await ctx.integration.connection.active(integrationId)
     if (connection) {
@@ -266,7 +263,7 @@ export default Plugin.define({
         name: "devin_status",
         description:
           "Check whether a Devin account is connected to OpenCode and report the active authentication source. Takes no input.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {},
           additionalProperties: false,
@@ -299,7 +296,7 @@ export default Plugin.define({
         name: "devin_create_session",
         description:
           "Create a new cloud Devin session with a task prompt and return its session_id and URL. Use this to hand off a self-contained task to Devin. Optionally provide a title, playbook_id, tags, and unlisted flag.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             prompt: {
@@ -344,13 +341,13 @@ export default Plugin.define({
             })
             const text = `Created Devin session ${session.session_id}\nURL: ${session.url}`
             return {
-              structured: session,
+              metadata: session,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to create Devin session: ${message}`)],
             }
           }
@@ -362,7 +359,7 @@ export default Plugin.define({
         name: "devin_list_sessions",
         description:
           "List recent Devin sessions for the connected account. Returns session_id, title, and status for each. Supports optional limit (default 20), offset, and tag filters.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
@@ -395,13 +392,13 @@ export default Plugin.define({
                 ? `Devin sessions (${result.sessions.length}):\n${lines.join("\n")}`
                 : "No Devin sessions found."
             return {
-              structured: result,
+              metadata: result,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to list Devin sessions: ${message}`)],
             }
           }
@@ -413,7 +410,7 @@ export default Plugin.define({
         name: "devin_get_session",
         description:
           "Retrieve details about an existing Devin session: status, metadata, and the full message history. Provide a session_id.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID." },
@@ -437,13 +434,13 @@ export default Plugin.define({
                 ? `\nMessages:\n${messageLines.join("\n")}`
                 : "\nNo messages yet.")
             return {
-              structured: session,
+              metadata: session,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to get Devin session: ${message}`)],
             }
           }
@@ -455,7 +452,7 @@ export default Plugin.define({
         name: "devin_send_message",
         description:
           "Send a message to an active Devin session to provide additional instructions or context. The session must be in a running state.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID." },
@@ -475,13 +472,13 @@ export default Plugin.define({
               ? `Message sent to Devin session ${args.session_id} (${detail}).`
               : `Message sent to Devin session ${args.session_id}.`
             return {
-              structured: { ok: true, session_id: args.session_id, detail: detail ?? null },
+              metadata: { ok: true, session_id: args.session_id, detail: detail ?? null },
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to send message: ${message}`)],
             }
           }
@@ -493,7 +490,7 @@ export default Plugin.define({
         name: "devin_terminate_session",
         description:
           "Terminate an active Devin session. Once terminated, the session cannot be resumed. Use only when the task is done or should be stopped.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID to terminate." },
@@ -508,7 +505,7 @@ export default Plugin.define({
             const orgId = await ensureOrgId(apiKey)
             const result = await Devin.terminateSession(apiKey, orgId, args.session_id)
             return {
-              structured: { ok: true, session_id: args.session_id, detail: result.detail },
+              metadata: { ok: true, session_id: args.session_id, detail: result.detail },
               content: [
                 textPart(`Terminated Devin session ${args.session_id}: ${result.detail}`),
               ],
@@ -516,7 +513,7 @@ export default Plugin.define({
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to terminate session: ${message}`)],
             }
           }
