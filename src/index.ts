@@ -9,8 +9,9 @@ const INTEGRATION_ID = "devin"
 const ENV_VAR = "DEVIN_API_KEY"
 const LLM_ENV_VAR = "DEVIN_LLM_API_KEY"
 const LLM_BASE_URL_ENV_VAR = "DEVIN_LLM_BASE_URL"
-/** Runtime package that streams Cognition/Windsurf LLM models. */
-const LLM_PACKAGE = "ai-sdk-devin"
+/** Runtime package that streams Cognition/Windsurf LLM models. The `aisdk:`
+ * prefix tells OpenCode to treat it as an AI SDK provider. */
+const LLM_PACKAGE = "aisdk:ai-sdk-devin"
 const DEFAULT_LLM_HOST = "https://server.codeium.com"
 
 interface LlmAuth {
@@ -222,7 +223,7 @@ export default Plugin.define({
         // string; v3 requires `{ unified, raw }`. Normalize it in flight so
         // OpenCode's finish-reason schema validates.
         await ctx.aisdk.hook("sdk", (event: any) => {
-          if (event.package !== LLM_PACKAGE) return
+          if (event.package !== LLM_PACKAGE.replace(/^aisdk:/, "")) return
           const apiKey = (event.options?.apiKey as string | undefined) ?? llm.token
           if (!apiKey) return
           const provider = createDevin({ apiKey, baseURL: llm.host })
