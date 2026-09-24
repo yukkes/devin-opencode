@@ -7,7 +7,7 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 - Adds 6 tools the OpenCode agent can call to manage cloud Devin sessions
 - Registers the Cognition/Windsurf models as `devin/...` entries in `/models` when a token is available
 - Signs in to Windsurf/Cognition from the TUI (`/connect` → **Windsurf (Cognition)**) for the models
-- Uses a Devin API key (TUI or `DEVIN_API_KEY`) for the session tools
+- Uses a `DEVIN_API_KEY` environment variable for the session tools (`/connect` does not ask for it)
 - Uses the Devin v3 API with `cog_` service user keys (also supports legacy `apk_`/`apk_user_` keys via v1 fallback)
 
 | Tool | Purpose |
@@ -110,7 +110,7 @@ The Devin CLI is not required.
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `DEVIN_API_KEY` | No | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`). Optional if you connect Devin from the TUI (`/connect`); a saved account takes precedence over the environment variable. |
+| `DEVIN_API_KEY` | No | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`). Only needed for the cloud session tools (`devin_*`); set it as an environment variable. `/connect` does not ask for it. |
 | `DEVIN_ORG_ID` | No | Your Devin organization ID (`org-...`). If not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API. |
 
 ## Install methods

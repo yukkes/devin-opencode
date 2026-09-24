@@ -284,14 +284,6 @@ export default Plugin.define({
     // setting DEVIN_API_KEY. Two auth methods: an API key (stored credential)
     // and an environment-variable connection.
     await ctx.integration.transform((draft) => {
-      draft.update(integrationId, (integration) => {
-        integration.name = "Devin"
-      })
-      draft.method.update({
-        integrationID: integrationId,
-        method: { type: "env", names: [ENV_VAR] },
-      })
-
       // Windsurf/Cognition sign-in for the `devin/...` models. Opens the browser
       // and exchanges the captured token for a long-lived Windsurf API key.
       draft.update(WINDSURF_INTEGRATION_ID, (integration) => {
