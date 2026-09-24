@@ -62,7 +62,7 @@ OpenCode v1 uses the singular `plugin` field and the legacy entrypoint. Clone th
 
 ### 3. Sign in
 
-**For the `devin/...` models (recommended):** sign in to Windsurf/Cognition from the TUI:
+Sign in to Windsurf/Cognition from the TUI to enable the `devin/...` models:
 
 ```text
 /connect
@@ -74,15 +74,7 @@ Select **Windsurf (Cognition)** and choose **Sign in with Windsurf**. A browser 
 npx opencode-windsurf-auth login
 ```
 
-**For the cloud session tools (`devin_*`) only:** those tools use a separate Devin API key. From the TUI:
-
-```text
-/connect
-```
-
-Select **Devin**, choose **Devin API key**, and paste your `cog_...` key (create one under **Settings > Service users** in the Devin app). The CLI equivalent is `opencode auth login devin --method key`. Skip this if you only want the models.
-
-A saved account takes precedence over the environment variable, so environment variables are optional:
+The Devin API key is only needed for the cloud session tools (`devin_*`), and is optional. It is not requested by `/connect`; set it as an environment variable if you use those tools:
 
 ```sh
 export DEVIN_API_KEY=cog_your_key_here

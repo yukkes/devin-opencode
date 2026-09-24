@@ -289,10 +289,6 @@ export default Plugin.define({
       })
       draft.method.update({
         integrationID: integrationId,
-        method: { type: "key", label: "Devin API key" },
-      })
-      draft.method.update({
-        integrationID: integrationId,
         method: { type: "env", names: [ENV_VAR] },
       })
 
