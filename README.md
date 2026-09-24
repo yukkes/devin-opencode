@@ -6,7 +6,7 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 
 - Adds 6 tools the OpenCode agent can call to manage cloud Devin sessions
 - Registers the Cognition/Windsurf models as `devin/...` entries in `/models` when a token is available
-- Signs in to Windsurf/Cognition from the TUI (`/connect` → **Windsurf (Cognition)**) for the models
+- Signs in from the TUI (`/connect` → **Devin** → **Sign in**) for the models
 - Uses a `DEVIN_API_KEY` environment variable for the session tools (`/connect` does not ask for it)
 - Uses the Devin v3 API with `cog_` service user keys (also supports legacy `apk_`/`apk_user_` keys via v1 fallback)
 
@@ -68,7 +68,7 @@ Sign in to Windsurf/Cognition from the TUI to enable the `devin/...` models:
 /connect
 ```
 
-Select **Windsurf (Cognition)** and choose **Sign in with Windsurf**. A browser opens, you sign in, and the token is captured automatically. The equivalent CLI command is:
+Select **Devin** and choose **Sign in**. A browser opens (Windsurf/Cognition), you sign in, and the token is captured automatically. The equivalent CLI command is:
 
 ```sh
 npx opencode-windsurf-auth login
@@ -94,7 +94,7 @@ Ask the OpenCode agent:
 `devin/...` entries in `/models` (SWE-2, Claude, GPT-6, Gemini, GLM, Kimi, and more) stream from Cognition's Windsurf server. They need a Windsurf/Cognition token, resolved in this order:
 
 1. `DEVIN_LLM_API_KEY`
-2. `/connect` → **Windsurf (Cognition)** (browser sign-in)
+2. `/connect` → **Devin** → **Sign in** (browser sign-in)
 3. `~/.config/opencode-windsurf-auth/credentials.json` (from `npx opencode-windsurf-auth login`)
 4. `~/.pi/agent/auth.json`
 5. `~/.local/share/devin/credentials.toml` (Devin CLI, fallback)

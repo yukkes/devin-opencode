@@ -287,11 +287,11 @@ export default Plugin.define({
       // Windsurf/Cognition sign-in for the `devin/...` models. Opens the browser
       // and exchanges the captured token for a long-lived Windsurf API key.
       draft.update(WINDSURF_INTEGRATION_ID, (integration) => {
-        integration.name = "Windsurf (Cognition)"
+        integration.name = "Devin"
       })
       draft.method.update({
         integrationID: WINDSURF_INTEGRATION_ID,
-        method: { id: "oauth", type: "oauth", label: "Sign in with Windsurf" },
+        method: { id: "oauth", type: "oauth", label: "Sign in" },
         authorize: async () => {
           const login = await prepareWindsurfLogin()
           return {
