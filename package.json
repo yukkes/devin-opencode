@@ -4,7 +4,7 @@
   "version": "0.1.7",
   "description": "OpenCode plugin (v1 and v2) to drive cloud Devin sessions from the OpenCode agent. Uses the Devin v3 API with cog_ service user keys.",
   "type": "module",
-  "main": "./src/legacy.ts",
+  "main": "./src/index.ts",
   "license": "MIT",
   "keywords": [
     "opencode",
@@ -24,8 +24,8 @@
   "author": "Karthik Nishanth",
   "exports": {
     ".": {
-      "import": "./src/legacy.ts",
-      "types": "./src/legacy.ts"
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
     },
     "./v2": {
       "import": "./src/index.ts",
@@ -44,7 +44,9 @@
     "prepublishOnly": "tsc --noEmit"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "next"
+    "@opencode/plugin": "^2.0.15",
+    "@opencode-ai/plugin": "next",
+    "ai-sdk-devin": "^0.3.6"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

@@ -5,6 +5,7 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 ## What it does
 
 - Adds 6 tools the OpenCode agent can call to manage cloud Devin sessions
+- OpenCode v2: adds the Devin models (SWE-2, Claude, GPT, Gemini, ...) as `devin/...` after signing in via `/connect`
 - Configure via environment variables (`DEVIN_API_KEY` + `DEVIN_ORG_ID`)
 - Uses the Devin v3 API with `cog_` service user keys (also supports legacy `apk_`/`apk_user_` keys via v1 fallback)
 
@@ -38,14 +39,10 @@ An [OpenCode](https://opencode.ai/) plugin that connects your [Devin](https://de
 }
 ```
 
-**OpenCode v2 (beta):**
+**OpenCode v2:**
 
-```jsonc
-// opencode.jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-devin-plugin/v2"]
-}
+```sh
+opencode plugin add github:yukkes/devin-opencode
 ```
 
 ### 3. Set your credentials
@@ -57,9 +54,16 @@ export DEVIN_API_KEY=cog_your_key_here
 export DEVIN_ORG_ID=org-your_org_id_here
 ```
 
-`DEVIN_ORG_ID` is optional — if not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API.
+`DEVIN_ORG_ID` is optional — if not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/self` API.
 
-> **Note:** Devin is a tool service, not an LLM provider, so it won't appear in the `/connect` command. Use environment variables instead.
+On OpenCode v2 the shell environment does not reach the background service, so set them there instead:
+
+```sh
+opencode service set env DEVIN_API_KEY cog_your_key_here
+opencode service restart
+```
+
+**Models (OpenCode v2):** run `/connect` → **Devin** → **Sign in** in the TUI and sign in with your Windsurf/Cognition account in the browser. The `devin/...` models then appear in `/models` (restart the service with `opencode service restart` if they don't). The Devin API key does not work for the models.
 
 ### 4. Use it
 
@@ -71,8 +75,8 @@ Ask the OpenCode agent:
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `DEVIN_API_KEY` | Yes (if not using `/connect`) | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`) |
-| `DEVIN_ORG_ID` | No | Your Devin organization ID (`org-...`). If not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/organizations` API. |
+| `DEVIN_API_KEY` | Yes (for the session tools) | Your Devin API key (`cog_...`, `apk_...`, or `apk_user_...`) |
+| `DEVIN_ORG_ID` | No | Your Devin organization ID (`org-...`). If not set, the plugin auto-discovers it from the Devin CLI config (`~/.config/devin/config.json`) or the `/v3/self` API. |
 
 ## Install methods
 

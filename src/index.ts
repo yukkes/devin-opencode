@@ -1,8 +1,17 @@
-import { Plugin } from "@opencode-ai/plugin/v2"
+import { Plugin, Model, Provider } from "@opencode/plugin"
+import { createDevin, getCachedCatalog, type ModelCatalogEntry } from "ai-sdk-devin"
+import * as crypto from "node:crypto"
+import * as http from "node:http"
 import { Devin, DevinApiError, resolveOrgId } from "./devin.js"
 
 const INTEGRATION_ID = "devin"
 const ENV_VAR = "DEVIN_API_KEY"
+const WINDSURF_OAUTH_CLIENT_ID = "3GUryQ7ldAeKEuD2obYnppsnmj58eP5u"
+const WINDSURF_SIGNIN_URL = "https://windsurf.com/windsurf/signin"
+const WINDSURF_REGISTER_URL = "https://register.windsurf.com"
+/** AI SDK provider for the Cognition models; `aisdk:` marks it as one for OpenCode. */
+const LLM_PACKAGE = "aisdk:ai-sdk-devin"
+const DEFAULT_LLM_HOST = "https://server.codeium.com"
 
 /** Cached org_id for v3 API calls. */
 let cachedOrgId: string | undefined
@@ -29,7 +38,6 @@ async function resolveApiKey(
     if (connection) {
       const value = await ctx.integration.connection.resolve(connection)
       if (value?.type === "key" && value.key) return value.key
-      if (value?.type === "oauth" && value.access) return value.access
     }
   } catch {
     // fall through to env lookup
@@ -40,7 +48,7 @@ async function resolveApiKey(
 function requireApiKey(apiKey: string | undefined): string {
   if (!apiKey) {
     throw new DevinApiError(
-      "Devin is not connected. Run /connect in the OpenCode TUI and choose Devin, or set the DEVIN_API_KEY environment variable.",
+      "Devin is not connected. Set the DEVIN_API_KEY environment variable.",
       401,
       undefined,
     )
@@ -89,30 +97,176 @@ function renderSession(s: {
   return `- ${s.session_id} | ${title} | ${status}`
 }
 
+/**
+ * Read the `devin-session-token$...` token and API host stored by the /connect
+ * sign-in. The models need this token; a Devin API key (`cog_...`) does not work.
+ */
+async function resolveLlm(ctx: any, integrationId: string) {
+  try {
+    const connection = await ctx.integration.connection.active(integrationId)
+    const value = connection ? await ctx.integration.connection.resolve(connection) : undefined
+    if (value?.type === "oauth" && value.access?.startsWith("devin-session-token$")) {
+      return { token: value.access as string, host: (value.metadata?.apiServerUrl as string) ?? DEFAULT_LLM_HOST }
+    }
+  } catch {
+    // not signed in
+  }
+  return undefined
+}
+
+/** Build an OpenCode model entry from a Cognition catalog entry. */
+function buildLlmModel(entry: ModelCatalogEntry): Model.Info {
+  return {
+    ...Model.Info.default(Provider.ID.make(INTEGRATION_ID), Model.ID.make(entry.modelUid)),
+    name: entry.label,
+    capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+    cost: [
+      {
+        input: (entry.pricing?.input ?? 0) as never,
+        output: (entry.pricing?.output ?? 0) as never,
+        cache: { read: (entry.pricing?.cachedInput ?? 0) as never, write: 0 as never },
+      },
+    ],
+    status: "active",
+    enabled: true,
+    limit: { context: entry.contextWindow || 256_000, output: 128_000 },
+  }
+}
+
+/**
+ * Sign in to Windsurf/Cognition in the browser: a loopback listener captures the
+ * token, which is exchanged for a long-lived `devin-session-token$...` key.
+ */
+async function signIn(): Promise<{ url: string; credential: Promise<any> }> {
+  let resolveToken: (token: string) => void = () => {}
+  let rejectToken: (error: Error) => void = () => {}
+  const token = new Promise<string>((resolve, reject) => {
+    resolveToken = resolve
+    rejectToken = reject
+  })
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1")
+    const value = url.searchParams.get("firebase_id_token") ?? url.searchParams.get("access_token")
+    res.writeHead(200, { "Content-Type": "text/html" })
+    if (value) {
+      res.end("<html><body>Signed in. You can close this tab and return to OpenCode.</body></html>")
+      resolveToken(value)
+    } else {
+      // The token arrives in the URL fragment; bounce it to the query string.
+      res.end("<html><body><script>var h=location.hash.slice(1);if(h)location.replace('/auth?'+h)</script></body></html>")
+    }
+  })
+  server.on("error", rejectToken)
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+  const params = new URLSearchParams({
+    response_type: "token",
+    client_id: WINDSURF_OAUTH_CLIENT_ID,
+    redirect_uri: `http://127.0.0.1:${(server.address() as { port: number }).port}/auth`,
+    state: crypto.randomUUID(),
+    prompt: "login",
+    redirect_parameters_type: "query",
+  })
+  const credential = token
+    .finally(() => server.close())
+    .then(async (firebaseIdToken) => {
+      const res = await fetch(`${WINDSURF_REGISTER_URL}/exa.seat_management_pb.SeatManagementService/RegisterUser`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Connect-Protocol-Version": "1" },
+        body: JSON.stringify({ firebase_id_token: firebaseIdToken }),
+      })
+      const body = (await res.json()) as { api_key?: string; name?: string; api_server_url?: string }
+      if (!res.ok || !body.api_key) throw new Error(`Windsurf sign-in failed (${res.status})`)
+      return {
+        type: "oauth",
+        methodID: "oauth",
+        refresh: "",
+        access: body.api_key,
+        expires: Math.floor(Date.now() / 1000) + 10 * 365 * 24 * 60 * 60,
+        metadata: { apiServerUrl: body.api_server_url || DEFAULT_LLM_HOST, name: body.name ?? "" },
+      }
+    })
+  return { url: `${WINDSURF_SIGNIN_URL}?${params}`, credential }
+}
+
 export default Plugin.define({
   id: "devin.opencode",
   setup: async (ctx) => {
     const options = (ctx.options ?? {}) as DevinPluginOptions
     const integrationId = options.integrationId ?? INTEGRATION_ID
 
-    // Register the Devin integration so users can connect via /connect or by
-    // setting DEVIN_API_KEY. Two auth methods: an API key (stored credential)
-    // and an environment-variable connection.
+    // Register the Devin integration so users can sign in via /connect for the
+    // `devin/...` models. The session tools read DEVIN_API_KEY.
     await ctx.integration.transform((draft) => {
       draft.update(integrationId, (integration) => {
         integration.name = "Devin"
       })
       draft.method.update({
         integrationID: integrationId,
-        method: { type: "key", label: "Devin API key" },
-      })
-      draft.method.update({
-        integrationID: integrationId,
-        method: { type: "env", names: [ENV_VAR] },
+        method: { id: "oauth", type: "oauth", label: "Sign in" },
+        authorize: async () => {
+          const login = await signIn()
+          return {
+            mode: "auto",
+            url: login.url,
+            instructions: "Sign in with your Windsurf/Cognition account in the browser.",
+            callback: login.credential,
+          } as any
+        },
       })
     })
 
     const getApiKey = () => resolveApiKey(ctx, integrationId)
+
+    // Register the `devin/...` models once signed in.
+    const llm = await resolveLlm(ctx, integrationId)
+    const catalog = llm ? await getCachedCatalog(llm.token, llm.host) : undefined
+    if (llm && catalog) {
+      await (ctx as any).provider.transform((editor: any) => {
+        editor.add({
+          info: {
+            ...Provider.Info.empty(Provider.ID.make(INTEGRATION_ID)),
+            // Tie the provider to the Devin sign-in so the TUI lists its models.
+            integrationID: integrationId,
+            name: "Devin",
+            activation: "enabled",
+            package: LLM_PACKAGE,
+            settings: { apiKey: llm.token, baseURL: llm.host },
+          },
+          models: Array.from(catalog.byUid.values())
+            .filter((entry) => !entry.disabled)
+            .map(buildLlmModel),
+        })
+      })
+      // OpenCode has no runtime for ai-sdk-devin, so hand it the SDK instance.
+      // ai-sdk-devin emits `finishReason` as a bare string; AI SDK v3 expects
+      // `{ unified, raw }`, so normalize it in flight.
+      await ctx.aisdk.hook("sdk", (event: any) => {
+        if (event.package !== LLM_PACKAGE.replace(/^aisdk:/, "")) return
+        const provider = createDevin({ apiKey: llm.token, baseURL: llm.host })
+        event.sdk = {
+          languageModel(modelId: string) {
+            const model = provider.languageModel(modelId)
+            return {
+              ...model,
+              doStream: async (opts: any) => {
+                const result = await model.doStream(opts)
+                const stream = result.stream.pipeThrough(
+                  new TransformStream<any, any>({
+                    transform(part, controller) {
+                      if (part?.type === "finish" && typeof part.finishReason === "string") {
+                        part = { ...part, finishReason: { unified: part.finishReason, raw: part.finishReason } }
+                      }
+                      controller.enqueue(part)
+                    },
+                  }),
+                )
+                return { ...result, stream }
+              },
+            }
+          },
+        }
+      })
+    }
 
     await ctx.tool.transform((tools) => {
       // --- devin_status -----------------------------------------------------
@@ -120,29 +274,20 @@ export default Plugin.define({
         name: "devin_status",
         description:
           "Check whether a Devin account is connected to OpenCode and report the active authentication source. Takes no input.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {},
           additionalProperties: false,
         },
         execute: async () => {
           const apiKey = await getApiKey()
-          const connection = await ctx.integration.connection
-            .active(integrationId)
-            .catch(() => undefined)
-          const source = connection?.type === "credential"
-            ? "stored credential"
-            : connection?.type === "env"
-              ? `environment variable (${ENV_VAR})`
-              : apiKey
-                ? `environment variable (${ENV_VAR})`
-                : "not connected"
+          const source = apiKey ? `environment variable (${ENV_VAR})` : "not connected"
           const text =
             source === "not connected"
-              ? "Devin is not connected. Run /connect and choose Devin, or set DEVIN_API_KEY."
+              ? "Devin is not connected. Set DEVIN_API_KEY."
               : `Devin is connected via ${source}.`
           return {
-            structured: { connected: source !== "not connected", source },
+            metadata: { connected: source !== "not connected", source },
             content: [textPart(text)],
           }
         },
@@ -153,7 +298,7 @@ export default Plugin.define({
         name: "devin_create_session",
         description:
           "Create a new cloud Devin session with a task prompt and return its session_id and URL. Use this to hand off a self-contained task to Devin. Optionally provide a title, playbook_id, tags, and unlisted flag.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             prompt: {
@@ -198,13 +343,13 @@ export default Plugin.define({
             })
             const text = `Created Devin session ${session.session_id}\nURL: ${session.url}`
             return {
-              structured: session,
+              metadata: session,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to create Devin session: ${message}`)],
             }
           }
@@ -216,7 +361,7 @@ export default Plugin.define({
         name: "devin_list_sessions",
         description:
           "List recent Devin sessions for the connected account. Returns session_id, title, and status for each. Supports optional limit (default 20), offset, and tag filters.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
@@ -249,13 +394,13 @@ export default Plugin.define({
                 ? `Devin sessions (${result.sessions.length}):\n${lines.join("\n")}`
                 : "No Devin sessions found."
             return {
-              structured: result,
+              metadata: result,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to list Devin sessions: ${message}`)],
             }
           }
@@ -267,7 +412,7 @@ export default Plugin.define({
         name: "devin_get_session",
         description:
           "Retrieve details about an existing Devin session: status, metadata, and the full message history. Provide a session_id.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID." },
@@ -291,13 +436,13 @@ export default Plugin.define({
                 ? `\nMessages:\n${messageLines.join("\n")}`
                 : "\nNo messages yet.")
             return {
-              structured: session,
+              metadata: session,
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to get Devin session: ${message}`)],
             }
           }
@@ -309,7 +454,7 @@ export default Plugin.define({
         name: "devin_send_message",
         description:
           "Send a message to an active Devin session to provide additional instructions or context. The session must be in a running state.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID." },
@@ -329,13 +474,13 @@ export default Plugin.define({
               ? `Message sent to Devin session ${args.session_id} (${detail}).`
               : `Message sent to Devin session ${args.session_id}.`
             return {
-              structured: { ok: true, session_id: args.session_id, detail: detail ?? null },
+              metadata: { ok: true, session_id: args.session_id, detail: detail ?? null },
               content: [textPart(text)],
             }
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to send message: ${message}`)],
             }
           }
@@ -347,7 +492,7 @@ export default Plugin.define({
         name: "devin_terminate_session",
         description:
           "Terminate an active Devin session. Once terminated, the session cannot be resumed. Use only when the task is done or should be stopped.",
-        jsonSchema: {
+        input: {
           type: "object",
           properties: {
             session_id: { type: "string", description: "The Devin session ID to terminate." },
@@ -362,7 +507,7 @@ export default Plugin.define({
             const orgId = await ensureOrgId(apiKey)
             const result = await Devin.terminateSession(apiKey, orgId, args.session_id)
             return {
-              structured: { ok: true, session_id: args.session_id, detail: result.detail },
+              metadata: { ok: true, session_id: args.session_id, detail: result.detail },
               content: [
                 textPart(`Terminated Devin session ${args.session_id}: ${result.detail}`),
               ],
@@ -370,7 +515,7 @@ export default Plugin.define({
           } catch (error) {
             const { message, status } = summarizeError(error)
             return {
-              structured: { ok: false, error: message, status },
+              metadata: { ok: false, error: message, status },
               content: [textPart(`Failed to terminate session: ${message}`)],
             }
           }
